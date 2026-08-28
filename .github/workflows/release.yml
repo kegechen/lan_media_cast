@@ -89,7 +89,7 @@ jobs:
             "release-assets/LANMediaCast-Receiver-$version.apk"
           Copy-Item sender_flutter/build/app/outputs/flutter-apk/app-release.apk `
             "release-assets/LANMediaCast-Sender-$version.apk"
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         with:
           name: android-release-assets
           path: release-assets/*
@@ -115,7 +115,7 @@ jobs:
       - name: Build Windows installer
         shell: pwsh
         run: ./scripts/build-windows-installer.ps1
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         with:
           name: windows-release-assets
           path: dist/LANMediaCast-Sender-*-Setup.exe
@@ -130,7 +130,7 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v8
         with:
           pattern: "*-release-assets"
           path: release-assets
