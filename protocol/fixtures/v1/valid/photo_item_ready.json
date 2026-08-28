@@ -1,0 +1,15 @@
+{
+  "v": 1,
+  "type": "photo.item.ready",
+  "id": "57263291-635e-49f9-bef6-0d2fbcc700cf",
+  "replyTo": "be87cc59-3429-4146-bf8c-e5a62a229780",
+  "sessionId": "f8737670-820d-493d-b6b8-647672e16e84",
+  "ts": 1787702401100,
+  "payload": {
+    "ok": true,
+    "batchId": "61a9194e-e0ad-4638-8af8-ff34831451ce",
+    "photoId": "11111111-1111-4111-8111-111111111111",
+    "transferId": "123e4567-e89b-42d3-a456-426614174000",
+    "nextChunkIndex": 0
+  }
+}

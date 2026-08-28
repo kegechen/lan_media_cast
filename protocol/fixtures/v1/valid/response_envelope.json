@@ -1,0 +1,9 @@
+{
+  "v": 1,
+  "type": "response",
+  "id": "5e367e00-59b2-4a04-a73c-27c55cd73f4d",
+  "replyTo": "4b9d0e42-62dd-4572-a25f-aa84e193e31f",
+  "sessionId": "f8737670-820d-493d-b6b8-647672e16e84",
+  "ts": 1787702400100,
+  "payload": {"ok": true}
+}

@@ -1,0 +1,22 @@
+{
+  "v": 1,
+  "type": "photo.batch.resume.state",
+  "id": "e1a7fe58-6586-43f8-b014-233449d247d9",
+  "replyTo": "b370029f-80a1-4cd7-aad6-b05f16266351",
+  "sessionId": "f8737670-820d-493d-b6b8-647672e16e84",
+  "ts": 1787702402001,
+  "payload": {
+    "ok": true,
+    "batchId": "61a9194e-e0ad-4638-8af8-ff34831451ce",
+    "batchStatus": "active",
+    "revision": 2,
+    "removedPhotoIds": [],
+    "items": [
+      {
+        "photoId": "11111111-1111-4111-8111-111111111111",
+        "status": "awaitingMeta",
+        "nextChunkIndex": null
+      }
+    ]
+  }
+}

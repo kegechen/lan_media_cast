@@ -1,0 +1,13 @@
+{
+  "v": 1,
+  "type": "protocol.error",
+  "id": "7467a859-b7a8-4ae1-bf3e-645761398ed3",
+  "sessionId": "f8737670-820d-493d-b6b8-647672e16e84",
+  "ts": 1787702402101,
+  "payload": {
+    "ok": false,
+    "code": "invalid_message",
+    "reason": "malformed_binary_header",
+    "transferId": null
+  }
+}

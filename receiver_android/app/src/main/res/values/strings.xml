@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">LAN Media Cast</string>
+    <string name="service_channel_name">投放接收服务</string>
+    <string name="service_notification_title">LAN Media Cast 已就绪</string>
+    <string name="service_notification_text">等待局域网设备连接</string>
+</resources>

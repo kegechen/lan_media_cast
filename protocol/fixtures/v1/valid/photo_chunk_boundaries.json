@@ -1,0 +1,31 @@
+{
+  "transferId": "123e4567-e89b-42d3-a456-426614174000",
+  "cases": [
+    {
+      "name": "fresh",
+      "chunkIndex": 0,
+      "frameHex": "4c4d433101100000123e4567e89b42d3a4564266141740000000000000000001aa"
+    },
+    {
+      "name": "resume",
+      "chunkIndex": 5,
+      "frameHex": "4c4d433101100000123e4567e89b42d3a4564266141740000000000500000001aa"
+    },
+    {
+      "name": "duplicate",
+      "chunkIndex": 4,
+      "frameHex": "4c4d433101100000123e4567e89b42d3a4564266141740000000000400000001aa"
+    },
+    {
+      "name": "jump",
+      "chunkIndex": 6,
+      "frameHex": "4c4d433101100000123e4567e89b42d3a4564266141740000000000600000001aa"
+    },
+    {
+      "name": "tombstoneTrailing",
+      "chunkIndex": 5,
+      "frameHex": "4c4d433101100000123e4567e89b42d3a4564266141740000000000500000001aa"
+    }
+  ],
+  "malformedHeaderHex": "004d433101100000123e4567e89b42d3a4564266141740000000000000000001aa"
+}

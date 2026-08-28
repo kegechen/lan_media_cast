@@ -1,0 +1,14 @@
+{
+  "v": 1,
+  "type": "response",
+  "id": "ca4cfd7f-a990-4407-8b65-d5a27d3cb7b8",
+  "replyTo": "ec175932-73d9-4c8f-a390-004e38674d23",
+  "ts": 1787702520001,
+  "payload": {
+    "ok": false,
+    "error": {
+      "code": "pairing_expired",
+      "message": "Pairing challenge expired"
+    }
+  }
+}

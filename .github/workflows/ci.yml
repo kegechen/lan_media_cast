@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sender:
+    name: Sender checks
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.38.5
+          channel: stable
+          cache: true
+      - name: Resolve dependencies
+        working-directory: sender_flutter
+        run: flutter pub get
+      - name: Check formatting
+        working-directory: sender_flutter
+        run: dart format --output=none --set-exit-if-changed lib test
+      - name: Analyze
+        working-directory: sender_flutter
+        run: flutter analyze
+      - name: Test
+        working-directory: sender_flutter
+        run: flutter test
+
+  receiver:
+    name: Receiver checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+          cache: gradle
+      - name: Make Gradle executable
+        run: chmod +x receiver_android/gradlew
+      - name: Test and lint
+        working-directory: receiver_android
+        run: ./gradlew --no-daemon testDebugUnitTest lintDebug

@@ -1,0 +1,18 @@
+{
+  "kind": "url",
+  "name": "Split lesson",
+  "url": "https://cdn.example/video-only.mp4?token=temporary",
+  "cacheKey": "web:example:primary",
+  "httpHeaders": {
+    "User-Agent": "Mozilla/5.0 LAN-Media-Cast-Test",
+    "Referer": "https://video.example/watch/1"
+  },
+  "audioTrack": {
+    "url": "https://cdn.example/audio-only.m4a?token=temporary",
+    "cacheKey": "web:example:audio",
+    "httpHeaders": {
+      "User-Agent": "Mozilla/5.0 LAN-Media-Cast-Test",
+      "Referer": "https://video.example/watch/1"
+    }
+  }
+}

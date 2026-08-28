@@ -1,0 +1,13 @@
+{
+  "v": 1,
+  "type": "protocol.error",
+  "id": "84664cb6-1a89-49e7-951b-8e8aa69e615e",
+  "sessionId": "f8737670-820d-493d-b6b8-647672e16e84",
+  "ts": 1787702402100,
+  "payload": {
+    "ok": false,
+    "code": "invalid_state",
+    "reason": "unknown_transfer",
+    "transferId": "123e4567-e89b-42d3-a456-426614174000"
+  }
+}

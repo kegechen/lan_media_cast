@@ -1,0 +1,12 @@
+{
+  "cases": [
+    {"Cookie": "session=secret"},
+    {"Authorization": "Bearer secret"},
+    {"X-Custom-Header": "not allowed"},
+    {"Referer": "https://video.example/\r\nX-Injected: true"},
+    {"Referer": " https://video.example/"},
+    {"Accept": "text/plain\tq=1"},
+    {"User-Agent": "非 ASCII"},
+    {"Accept": true}
+  ]
+}

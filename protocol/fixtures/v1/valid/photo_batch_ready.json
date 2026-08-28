@@ -1,0 +1,13 @@
+{
+  "v": 1,
+  "type": "photo.batch.ready",
+  "id": "1126b003-b8c7-4af8-9103-25cbf9977d41",
+  "replyTo": "a06a08fa-caf0-4eb2-b0d5-e42402771645",
+  "sessionId": "f8737670-820d-493d-b6b8-647672e16e84",
+  "ts": 1787702401000,
+  "payload": {
+    "ok": true,
+    "batchId": "61a9194e-e0ad-4638-8af8-ff34831451ce",
+    "revision": 1
+  }
+}

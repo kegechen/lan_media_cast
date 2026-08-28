@@ -1,0 +1,47 @@
+{
+  "v": 1,
+  "type": "photo.batch.resume.state",
+  "id": "fe23a408-1e6f-4738-93f4-51ba8782d112",
+  "replyTo": "b370029f-80a1-4cd7-aad6-b05f16266351",
+  "sessionId": "f8737670-820d-493d-b6b8-647672e16e84",
+  "ts": 1787702402000,
+  "payload": {
+    "ok": true,
+    "batchId": "61a9194e-e0ad-4638-8af8-ff34831451ce",
+    "batchStatus": "active",
+    "revision": 2,
+    "removedPhotoIds": ["55555555-5555-4555-8555-555555555555"],
+    "items": [
+      {
+        "photoId": "11111111-1111-4111-8111-111111111111",
+        "status": "awaitingMeta",
+        "transferId": null,
+        "nextChunkIndex": null
+      },
+      {
+        "photoId": "22222222-2222-4222-8222-222222222222",
+        "status": "ready",
+        "transferId": "223e4567-e89b-42d3-a456-426614174000",
+        "nextChunkIndex": 0
+      },
+      {
+        "photoId": "33333333-3333-4333-8333-333333333333",
+        "status": "partial",
+        "transferId": "323e4567-e89b-42d3-a456-426614174000",
+        "nextChunkIndex": 4
+      },
+      {
+        "photoId": "44444444-4444-4444-8444-444444444444",
+        "status": "complete",
+        "transferId": "423e4567-e89b-42d3-a456-426614174000",
+        "nextChunkIndex": 8
+      },
+      {
+        "photoId": "55555555-5555-4555-8555-555555555555",
+        "status": "removed",
+        "transferId": null,
+        "nextChunkIndex": null
+      }
+    ]
+  }
+}

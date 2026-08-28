@@ -1,0 +1,46 @@
+{
+  "cases": [
+    {
+      "kind": "url",
+      "name": "Cookie leak",
+      "url": "https://cdn.example/video.mp4",
+      "audioTrack": {
+        "url": "https://cdn.example/audio.m4a",
+        "httpHeaders": {"Cookie": "session=secret"}
+      }
+    },
+    {
+      "kind": "url",
+      "name": "RTSP audio",
+      "url": "https://cdn.example/video.mp4",
+      "audioTrack": {"url": "rtsp://media.example/audio"}
+    },
+    {
+      "kind": "url",
+      "name": "Unknown format",
+      "url": "https://cdn.example/video.mp4",
+      "audioTrack": {
+        "url": "https://cdn.example/audio.m4a",
+        "formatHint": "unknown"
+      }
+    },
+    {
+      "kind": "url",
+      "name": "Adaptive audio cannot be merged safely",
+      "url": "https://cdn.example/video.mp4",
+      "audioTrack": {
+        "url": "https://cdn.example/audio.m3u8",
+        "formatHint": "hls"
+      }
+    },
+    {
+      "kind": "url",
+      "name": "Adaptive video cannot be merged safely",
+      "url": "https://cdn.example/video.m3u8",
+      "formatHint": "hls",
+      "audioTrack": {
+        "url": "https://cdn.example/audio.m4a"
+      }
+    }
+  ]
+}

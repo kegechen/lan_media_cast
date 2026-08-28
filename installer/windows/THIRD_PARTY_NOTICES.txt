@@ -1,0 +1,7 @@
+LAN Media Cast includes yt-dlp 2026.08.19 as an optional web-video URL resolver.
+
+yt-dlp project: https://github.com/yt-dlp/yt-dlp
+License: The Unlicense
+
+This is free and unencumbered software released into the public domain.
+For more information, please refer to https://unlicense.org/.

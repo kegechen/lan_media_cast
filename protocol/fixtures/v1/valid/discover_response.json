@@ -1,0 +1,13 @@
+{
+  "v": 1,
+  "type": "discover.response",
+  "requestId": "8d4a095e-9849-4fc0-9563-53dca684027f",
+  "deviceId": "a8dce123-eb78-4ad0-80a8-1d8f8e58609b",
+  "deviceName": "Projector-01",
+  "wssPort": 39881,
+  "busy": false,
+  "pairingRequired": true,
+  "protocolMin": 1,
+  "protocolMax": 1,
+  "capabilities": ["media", "photo", "hls", "dash", "rtsp", "cache"]
+}

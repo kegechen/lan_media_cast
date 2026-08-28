@@ -1,0 +1,16 @@
+{
+  "v": 1,
+  "type": "session.ready",
+  "id": "19ec07a4-cc74-45ea-97bd-1455b695af6e",
+  "sessionId": "f8737670-820d-493d-b6b8-647672e16e84",
+  "ts": 1787702400200,
+  "payload": {
+    "sessionId": "f8737670-820d-493d-b6b8-647672e16e84",
+    "deviceId": "a8dce123-eb78-4ad0-80a8-1d8f8e58609b",
+    "deviceName": "Projector-01",
+    "trustedToken": "fixture-trusted-token",
+    "capabilities": ["media", "photo", "cache"],
+    "playlistRevision": 12,
+    "mode": "media"
+  }
+}

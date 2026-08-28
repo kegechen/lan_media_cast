@@ -1,0 +1,74 @@
+# Operating systems
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# IDEs and editors
+.idea/
+*.iml
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+*.code-workspace
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+local.properties
+key.properties
+*.jks
+*.keystore
+*.p12
+*.pem
+*.mobileprovision
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo
+*.orig
+coverage/
+test-results/
+
+# Flutter and Dart
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub-cache/
+.pub/
+**/doc/api/
+**/ios/Flutter/.last_build_id
+
+# Android and Gradle
+.gradle/
+**/.cxx/
+**/.externalNativeBuild/
+**/captures/
+**/generated/
+
+# Build outputs
+**/build/
+**/out/
+**/dist/
+*.apk
+*.aab
+*.apks
+*.exe
+*.dll
+*.pdb
+*.obj
+*.lib
+
+# Downloaded sidecars
+tools/*.exe
+tools/*.download
+
+# Runtime data
+received_files/
+media_cache/
+photo_cache/
