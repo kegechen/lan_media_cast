@@ -11,7 +11,7 @@ String userFacingError(Object error) {
   }
   if (error is TlsException) return error.message;
   return error.toString().replaceFirst(
-    RegExp(r'^(Bad state|Exception):\s*'),
+    RegExp(r'^(Bad state|Exception|FormatException):\s*'),
     '',
   );
 }

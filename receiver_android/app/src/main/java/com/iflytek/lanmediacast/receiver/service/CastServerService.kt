@@ -7,11 +7,11 @@ import android.app.Service
 import android.content.Intent
 import android.os.Build
 import android.os.IBinder
-import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.iflytek.lanmediacast.receiver.MainActivity
 import com.iflytek.lanmediacast.receiver.R
 import com.iflytek.lanmediacast.receiver.core.ReceiverRuntime
+import com.iflytek.lanmediacast.receiver.core.ReceiverLog
 import com.iflytek.lanmediacast.receiver.network.CastSessionServer
 import com.iflytek.lanmediacast.receiver.network.DiscoveryResponder
 import com.iflytek.lanmediacast.receiver.photo.PhotoExplainCoordinator
@@ -34,7 +34,7 @@ class CastServerService : Service() {
         try {
             startCastRuntime()
         } catch (error: Exception) {
-            Log.e(TAG, "Unable to start cast runtime", error)
+            ReceiverLog.e(TAG, "Unable to start cast runtime", error)
             ReceiverRuntime.update {
                 it.copy(banner = "接收服务启动失败：${error.javaClass.simpleName}", bannerIsError = true)
             }
@@ -56,7 +56,21 @@ class CastServerService : Service() {
 
     private fun startCastRuntime() {
         val identity = ReceiverIdentity(this)
+        ReceiverLog.i(TAG, "Cast runtime starting: sdk=${Build.VERSION.SDK_INT}, model=${Build.MODEL}")
         val controlPort = findControlPort()
+        // Publish the healthy baseline BEFORE the control server starts. It binds on its own
+        // thread, so a fatal bind failure is reported asynchronously; clearing the banner after
+        // start() would race with -- and usually erase -- the only signal the user gets, leaving
+        // a receiver that looks fine but can never accept a connection.
+        ReceiverRuntime.update {
+            it.copy(
+                deviceName = identity.deviceName,
+                address = findLanAddress() ?: "未连接局域网",
+                controlPort = controlPort,
+                banner = null,
+                bannerIsError = false,
+            )
+        }
         playback = PlaybackCoordinator(this) { payload ->
             if (::sessionServer.isInitialized) sessionServer.sendPlayerState(payload)
         }
@@ -67,15 +81,6 @@ class CastServerService : Service() {
         sessionServer.start()
         discovery = DiscoveryResponder(this, identity, { controlPort }, { sessionServer.isBusy })
         discovery.start()
-        ReceiverRuntime.update {
-            it.copy(
-                deviceName = identity.deviceName,
-                address = findLanAddress() ?: "未连接局域网",
-                controlPort = controlPort,
-                banner = null,
-                bannerIsError = false,
-            )
-        }
     }
 
     private fun findControlPort(): Int {

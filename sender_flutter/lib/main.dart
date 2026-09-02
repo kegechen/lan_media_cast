@@ -214,6 +214,7 @@ class SenderScreen extends StatefulWidget {
 class _SenderScreenState extends State<SenderScreen> {
   final TextEditingController _manualAddress = TextEditingController();
   bool _pairingDialogOpen = false;
+  bool _trustDialogOpen = false;
 
   @override
   void initState() {
@@ -237,6 +238,86 @@ class _SenderScreenState extends State<SenderScreen> {
       _pairingDialogOpen = true;
       WidgetsBinding.instance.addPostFrameCallback((_) => _showPairingDialog());
     }
+    if (connection.certificateChanged && !_trustDialogOpen) {
+      _trustDialogOpen = true;
+      WidgetsBinding.instance.addPostFrameCallback(
+        (_) => _showTrustChangeDialog(),
+      );
+    }
+  }
+
+  Future<void> _showTrustChangeDialog() async {
+    try {
+      if (!mounted) return;
+      final CastConnection connection = widget.controller.connection;
+      if (connection.isDisposed || !connection.certificateChanged) return;
+      final String address =
+          '${connection.target?.address ?? '?'}:${connection.target?.wssPort ?? '?'}';
+      final String pinned = _shortFingerprint(connection.pinnedFingerprint);
+      final String presented = _shortFingerprint(connection.presentedFingerprint);
+      final bool? retrust = await showDialog<bool>(
+        context: context,
+        barrierDismissible: false,
+        builder: (BuildContext dialogContext) => AlertDialog(
+          title: const Text('接收端身份已变化'),
+          content: SelectionArea(
+            child: Text(
+              // Deliberately identified by address and fingerprint rather than
+              // by device name: the name comes from an unauthenticated
+              // discovery response and can be spoofed.
+              '$address 出示的证书与上次连接时不同。\n\n'
+              '已保存指纹：$pinned\n'
+              '本次出示：$presented\n\n'
+              '接收端重装或升级后会出现这种情况，属于正常现象。但如果你并未升级过它，'
+              '也可能是同网段的其他设备在冒充它。\n\n'
+              '确认重新信任会清除已保存的凭据，并需要重新输入一次电视上显示的 6 位连接码。',
+            ),
+          ),
+          actions: <Widget>[
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('重新信任'),
+            ),
+          ],
+        ),
+      );
+      if (!mounted || connection.isDisposed) return;
+      if (retrust == true) {
+        await connection.trustChangedReceiver();
+      } else {
+        await connection.disconnect();
+      }
+    } on Object catch (error, stackTrace) {
+      unawaited(
+        AppLog.instance.error(
+          'connection.retrust_failed',
+          error,
+          stackTrace: stackTrace,
+        ),
+      );
+    } finally {
+      _trustDialogOpen = false;
+      // Re-raise the prompt if re-trusting failed: the connection is still
+      // blocked, and nothing else would notify us to ask again.
+      final CastConnection connection = widget.controller.connection;
+      if (mounted &&
+          !connection.isDisposed &&
+          connection.certificateChanged &&
+          !_pairingDialogOpen) {
+        WidgetsBinding.instance.addPostFrameCallback((_) => _refresh());
+      }
+    }
+  }
+
+  static String _shortFingerprint(String? fingerprint) {
+    if (fingerprint == null || fingerprint.isEmpty) return '未知';
+    return fingerprint.length <= 16
+        ? fingerprint
+        : '${fingerprint.substring(0, 16)}…';
   }
 
   Future<void> _openLogDirectory() async {
@@ -303,6 +384,14 @@ class _SenderScreenState extends State<SenderScreen> {
                 dimension: 18,
                 child: CircularProgressIndicator(strokeWidth: 2),
               ),
+            ),
+          if (defaultTargetPlatform == TargetPlatform.windows)
+            IconButton(
+              onPressed: controller.busy || !controller.connection.isReady
+                  ? null
+                  : () => unawaited(controller.fetchReceiverLogs()),
+              icon: const Icon(Icons.download_for_offline_outlined),
+              tooltip: '获取接收端日志',
             ),
           if (defaultTargetPlatform == TargetPlatform.windows)
             IconButton(

@@ -6,7 +6,6 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.util.Base64
-import android.util.Log
 import androidx.annotation.VisibleForTesting
 import androidx.media3.common.MediaItem
 import androidx.media3.common.C
@@ -34,6 +33,7 @@ import androidx.media3.exoplayer.source.MediaSource
 import androidx.media3.exoplayer.source.MergingMediaSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import com.iflytek.lanmediacast.receiver.core.ReceiverRuntime
+import com.iflytek.lanmediacast.receiver.core.ReceiverLog
 import com.iflytek.lanmediacast.receiver.core.ReceiverUiState
 import com.iflytek.lanmediacast.receiver.protocol.RemoteMediaSourceValidator
 import com.iflytek.lanmediacast.receiver.protocol.RemoteMediaTrack
@@ -164,7 +164,7 @@ class PlaybackCoordinator(
             }
 
             override fun onPlayerError(error: PlaybackException) {
-                Log.e(
+                ReceiverLog.e(
                     TAG,
                     "Playback failed: code=${error.errorCodeName}, causes=${playbackErrorCauses(error)}",
                 )
@@ -181,7 +181,7 @@ class PlaybackCoordinator(
             }
 
             override fun onTracksChanged(tracks: Tracks) {
-                Log.i(TAG, "Tracks changed: ${trackSummary(tracks)}")
+                ReceiverLog.i(TAG, "Tracks changed: ${trackSummary(tracks)}")
             }
         })
         mainHandler.post(positionPublisher)
@@ -250,7 +250,7 @@ class PlaybackCoordinator(
             return error("invalid_message", failure.message ?: "Invalid playlist")
         }
         items = parsed
-        Log.i(
+        ReceiverLog.i(
             TAG,
             "Playlist accepted: items=${parsed.size}, splitAudio=${parsed.count { it.audioTrack != null }}",
         )
@@ -456,7 +456,7 @@ class PlaybackCoordinator(
     ): MediaSource {
         val primary = createRemoteTrackSource(mediaId, primaryTrack.source, primaryTrack.httpHeaders)
         val audio = audioTrack ?: return primary
-        Log.i(
+        ReceiverLog.i(
             TAG,
             "Creating split source: primaryHost=${Uri.parse(primaryTrack.source.string("url")).host}, " +
                 "audioHost=${Uri.parse(audio.source.string("url")).host}",

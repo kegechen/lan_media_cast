@@ -22,6 +22,7 @@ object ProtocolLimits {
     const val MAX_NAME_BYTES = 256
     const val MAX_PLAYLIST_ITEMS = 500
     const val MAX_PHOTO_ITEMS = 9
+    const val MAX_RECEIVER_LOG_CHUNK_BYTES = 16 * 1_024
 }
 
 @Serializable
@@ -88,6 +89,7 @@ object ProtocolCodec {
         "photo.item.meta",
         "photo.batch.resume.query",
         "photo.operation",
+        "diagnostics.logs.get",
     )
 
     fun decodeDiscoveryQuery(bytes: ByteArray): DiscoveryQuery {
@@ -113,7 +115,13 @@ object ProtocolCodec {
         val root = try {
             json.parseToJsonElement(text).jsonObject
         } catch (error: Exception) {
-            throw ProtocolException("invalid_message", "Malformed JSON envelope: ${error.message}")
+            // kotlinx appends a "JSON input: <raw frame window>" tail. That window is peer
+            // controlled and can carry a `trustedToken`, so keep only the diagnostic prefix
+            // rather than relying on downstream redaction to claw it back.
+            val detail = (error.message ?: error.javaClass.simpleName)
+                .substringBefore("\nJSON input:")
+                .take(200)
+            throw ProtocolException("invalid_message", "Malformed JSON envelope: $detail")
         }
         val version = root.int("v")
         val type = root.string("type")

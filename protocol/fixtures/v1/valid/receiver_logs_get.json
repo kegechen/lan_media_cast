@@ -1,0 +1,12 @@
+{
+  "v": 1,
+  "type": "diagnostics.logs.get",
+  "id": "b1a8c4d2-8f52-4f9e-9c6b-4d4d2e8c0a11",
+  "sessionId": "f8737670-820d-493d-b6b8-647672e16e84",
+  "commandSeq": 19,
+  "ts": 1787702400200,
+  "payload": {
+    "offset": 0,
+    "maxBytes": 16384
+  }
+}

@@ -37,6 +37,7 @@ class ProtocolFixtureTest {
         )
         assertEquals("photo.batch.ready", ProtocolCodec.decodeEnvelope(read("valid/photo_batch_ready.json")).type)
         assertEquals("photo.item.ready", ProtocolCodec.decodeEnvelope(read("valid/photo_item_ready.json")).type)
+        assertEquals("diagnostics.logs.get", ProtocolCodec.decodeEnvelope(read("valid/receiver_logs_get.json")).type)
         validatePhotoResume(ProtocolCodec.decodeEnvelope(read("valid/photo_batch_resume_state.json")).payload)
         assertEquals(
             "unknown_transfer",

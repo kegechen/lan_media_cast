@@ -65,6 +65,10 @@ void main() {
       ProtocolEnvelope.decode(fixture('valid/photo_item_ready.json')).type,
       'photo.item.ready',
     );
+    expect(
+      ProtocolEnvelope.decode(fixture('valid/receiver_logs_get.json')).type,
+      'diagnostics.logs.get',
+    );
     final ProtocolEnvelope resume = ProtocolEnvelope.decode(
       fixture('valid/photo_batch_resume_state.json'),
     );

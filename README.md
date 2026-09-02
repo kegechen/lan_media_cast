@@ -28,7 +28,8 @@ LAN Media Cast 由一个 Android 接收端和一个 Flutter 发送端组成。�
 - 持久播放列表、播放控制、跳转、单项循环、列表循环和顺序播放一次。
 - 1-9 张照片分块传输、断线续传、单图全屏和多图宫格讲解。
 - 接收端有界磁盘缓存；控制连接中断时可继续播放已缓存内容。
-- Windows 发送端滚动诊断日志，记录连接、播放列表及媒体 Range 请求并脱敏凭据。
+- Windows 发送端滚动诊断日志，记录连接、播放列表及媒体 Range 请求；Android 接收端保留连接、
+  播放列表、播放和媒体网络错误。两端均脱敏凭据。
 
 屏幕镜像不包含在当前版本内，相关设计仍处于后续阶段。
 
@@ -38,9 +39,9 @@ LAN Media Cast 由一个 Android 接收端和一个 Flutter 发送端组成。�
 
 | 文件 | 用途 | 最低系统 |
 |---|---|---|
-| `LANMediaCast-Sender-1.0.0-Setup.exe` | Windows 发送端 | Windows 10 64 位 |
-| `LANMediaCast-Sender-1.0.0.apk` | Android 发送端 | Android 8.0 / API 26 |
-| `LANMediaCast-Receiver-1.0.0.apk` | Android 接收端 | Android 7.0 / API 24 |
+| `LANMediaCast-Sender-1.0.1-Setup.exe` | Windows 发送端 | Windows 10 64 位 |
+| `LANMediaCast-Sender-1.0.1.apk` | Android 发送端 | Android 8.0 / API 26 |
+| `LANMediaCast-Receiver-1.0.1.apk` | Android 接收端 | Android 7.0 / API 24 |
 
 Windows Setup 支持覆盖安装，并为发送端程序添加适用于 Domain、Private 和 Public 网络的入站
 防火墙规则。安装包和主程序目前没有 Authenticode 证书，Windows SmartScreen 可能在首次运行时
@@ -53,20 +54,26 @@ Android `1.0.0` 是首个使用正式 Release 密钥签名的版本。若设备�
 
 1. 在接收设备安装并打开 Receiver APK。
 2. 在 Windows 或 Android 打开 Sender。
-3. 在设备列表选择接收端；首次连接时输入接收画面上的 6 位连接码。
+3. 在设备列表选择接收端；首次连接时输入接收画面上的 6 位连接码。之后自动免码重连；只有接收端
+   重装或升级导致证书变化时，发送端会提示确认「重新信任」并要求再输入一次连接码。
 4. 添加本地文件、网络地址或网页分享文案，然后选择播放列表项目。
 
 UDP 自动发现只覆盖同一广播域。不同子网之间如已配置双向路由，可使用手动 IP 连接；还必须允许
 接收端主动访问发送端动态 HTTPS 媒体端口。
 
 Windows 日志位于 `%LOCALAPPDATA%\LAN Media Cast\logs`，默认保留 3 个文件，每个最多 2 MiB。
-发送端右上角的文件夹按钮可直接打开日志目录。
+发送端右上角的下载按钮可通过已配对的 WSS 连接获取接收端最近的诊断日志，保存为
+`receiver-YYYYMMDD-HHMMSS.log`（同一秒内重复获取会追加 `-1`、`-2` 后缀），同样只保留最新
+3 个；文件夹按钮可直接打开日志目录。接收端日志在内存中最多保留 256 KiB，不需要 ADB，
+也不会发送播放控制命令。
 
 ## 安全边界
 
 - 控制链路使用安装级证书固定 WSS；首次配对通过 6 位短认证字符串确认设备。
+- 可信 token 只在证书与已保存 pin 校验通过后发送；首次信任的连接不交出该凭据。
+- 证书指纹不匹配时终止连接并停止自动重连，由用户确认后清除旧凭据并重新配对。
 - 本地媒体服务使用独立 TLS 证书、随机 Bearer Token、强 ETag 和 `If-Match`。
-- Token、Cookie、证书私钥和完整签名 URL 不写入持久日志。
+- Token、Cookie、证书私钥和完整签名 URL 不写入两端的持久日志。
 - 浏览器登录状态只在用户添加网页视频时显式使用，不进入控制协议或持久播放列表。
 - DRM、付费授权绕过、验证码绕过和公网中转不在项目范围内。
 

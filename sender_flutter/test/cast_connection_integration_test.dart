@@ -210,6 +210,100 @@ void main() {
     expect(hello.payload['trustedToken'], 'manual-trusted-token');
   });
 
+  test(
+    'a changed certificate stops reconnecting and withholds the token until re-trusted',
+    () async {
+      final _FakeReceiver receiver = await _FakeReceiver.start();
+      final String manualId =
+          'manual-${InternetAddress.loopbackIPv4.address}-${receiver.port}';
+      final String stalePin = receiver.certificatePin.replaceFirst(
+        receiver.certificatePin[0],
+        receiver.certificatePin[0] == 'A' ? 'B' : 'A',
+      );
+      FlutterSecureStorage.setMockInitialValues(<String, String>{
+        'receiver_pin_$manualId': stalePin,
+        'receiver_token_$manualId': 'manual-trusted-token',
+      });
+      final CastConnection connection = CastConnection(
+        senderId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        senderName: 'Test Sender',
+      );
+      addTearDown(() async {
+        await connection.disconnect();
+        connection.dispose();
+        await receiver.close();
+      });
+
+      await connection.connect(
+        DeviceTarget(
+          deviceId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+          deviceName: 'Resolved Receiver',
+          address: InternetAddress.loopbackIPv4.address,
+          wssPort: receiver.port,
+          busy: false,
+          pairingRequired: false,
+        ),
+      );
+
+      // The stale pin must be honoured: the handshake fails and, because
+      // retrying can never succeed, reconnection stops instead of looping.
+      expect(connection.certificateChanged, isTrue);
+      expect(connection.phase, ConnectionPhase.disconnected);
+
+      final Future<ProtocolEnvelope> helloFuture = receiver.messages.firstWhere(
+        (ProtocolEnvelope envelope) => envelope.type == 'session.hello',
+      );
+      await connection.trustChangedReceiver();
+      final ProtocolEnvelope hello = await helloFuture.timeout(
+        const Duration(seconds: 5),
+      );
+
+      // Re-trusting drops the old credentials, so the token issued to the
+      // previous identity is not replayed to the new one.
+      expect(connection.certificateChanged, isFalse);
+      expect(hello.payload['trustedToken'], isNull);
+    },
+  );
+
+  test('withholds the trusted token when the certificate is unpinned', () async {
+    final _FakeReceiver receiver = await _FakeReceiver.start();
+    final String manualId =
+        'manual-${InternetAddress.loopbackIPv4.address}-${receiver.port}';
+    // A token with no matching pin: the peer's certificate cannot be verified,
+    // so the bearer credential must not leave the sender.
+    FlutterSecureStorage.setMockInitialValues(<String, String>{
+      'receiver_token_$manualId': 'manual-trusted-token',
+    });
+    final CastConnection connection = CastConnection(
+      senderId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      senderName: 'Test Sender',
+    );
+    addTearDown(() async {
+      await connection.disconnect();
+      connection.dispose();
+      await receiver.close();
+    });
+
+    final Future<ProtocolEnvelope> helloFuture = receiver.messages.firstWhere(
+      (ProtocolEnvelope envelope) => envelope.type == 'session.hello',
+    );
+    await connection.connect(
+      DeviceTarget(
+        deviceId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+        deviceName: 'Resolved Receiver',
+        address: InternetAddress.loopbackIPv4.address,
+        wssPort: receiver.port,
+        busy: false,
+        pairingRequired: false,
+      ),
+    );
+
+    final ProtocolEnvelope hello = await helloFuture.timeout(
+      const Duration(seconds: 5),
+    );
+    expect(hello.payload['trustedToken'], isNull);
+  });
+
   test('receiver busy ends the handshake without reconnecting', () async {
     final _FakeReceiver receiver = await _FakeReceiver.start();
     final CastConnection connection = CastConnection(

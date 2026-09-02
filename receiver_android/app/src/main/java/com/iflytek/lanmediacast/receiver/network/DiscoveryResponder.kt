@@ -2,7 +2,7 @@ package com.iflytek.lanmediacast.receiver.network
 
 import android.content.Context
 import android.net.wifi.WifiManager
-import android.util.Log
+import com.iflytek.lanmediacast.receiver.core.ReceiverLog
 import com.iflytek.lanmediacast.receiver.protocol.DiscoveryResponse
 import com.iflytek.lanmediacast.receiver.protocol.ProtocolCodec
 import com.iflytek.lanmediacast.receiver.protocol.ProtocolException
@@ -28,9 +28,13 @@ class DiscoveryResponder(
     private val datagramLoop = DiscoveryDatagramLoop(
         port = DISCOVERY_PORT,
         onPacket = ::handle,
-        onRecoverableError = { error -> Log.w(TAG, "Discovery packet failed", error) },
+        // Unauthenticated and unbounded: anyone can make the reply send() fail (e.g. a query
+        // with source port 0) and drive one write per packet. Budgeted, and no stack trace.
+        onRecoverableError = { error ->
+            ReceiverLog.untrusted(TAG, "Discovery packet failed: ${error.javaClass.simpleName}")
+        },
         onFatalError = { error ->
-            if (running.get()) Log.e(TAG, "Discovery socket failed", error)
+            if (running.get()) ReceiverLog.e(TAG, "Discovery socket failed", error)
         },
     )
 

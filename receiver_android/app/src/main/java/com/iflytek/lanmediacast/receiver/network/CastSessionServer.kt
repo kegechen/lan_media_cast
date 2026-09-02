@@ -2,8 +2,8 @@ package com.iflytek.lanmediacast.receiver.network
 
 import android.os.SystemClock
 import android.util.Base64
-import android.util.Log
 import com.iflytek.lanmediacast.receiver.core.PairingRequest
+import com.iflytek.lanmediacast.receiver.core.ReceiverLog
 import com.iflytek.lanmediacast.receiver.core.ReceiverRuntime
 import com.iflytek.lanmediacast.receiver.playback.PlaybackCoordinator
 import com.iflytek.lanmediacast.receiver.photo.PhotoBinaryException
@@ -21,11 +21,13 @@ import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
 import org.java_websocket.WebSocket
 import org.java_websocket.handshake.ClientHandshake
@@ -67,12 +69,14 @@ class CastSessionServer(
     private var senderId: String? = null
     private var lastActivityElapsed = SystemClock.elapsedRealtime()
     private var heartbeat: ScheduledFuture<*>? = null
+    @Volatile
+    private var serverFatal = false
 
     val isBusy: Boolean
         get() = connection.get() != null
 
     override fun onStart() {
-        Log.i(TAG, "WSS control server listening on $port")
+        ReceiverLog.i(TAG, "WSS control server listening on $port")
         heartbeat = scheduler.scheduleWithFixedDelay(::heartbeatTick, 5, 5, TimeUnit.SECONDS)
     }
 
@@ -102,7 +106,12 @@ class CastSessionServer(
         val envelope = try {
             ProtocolCodec.decodeEnvelope(message)
         } catch (error: ProtocolException) {
-            Log.w(TAG, "Rejected sender message: code=${error.code}, detail=${error.message}")
+            val detail = "Rejected sender message: code=${error.code}, detail=${error.message}"
+            if (isSessionConnection(conn)) {
+                ReceiverLog.w(TAG, detail)
+            } else {
+                ReceiverLog.untrusted(TAG, detail)
+            }
             conn.send(errorResponse(null, error.code, error.message ?: "Invalid message"))
             if (error.code == "message_too_large") conn.close(1009, error.code)
             return
@@ -144,7 +153,7 @@ class CastSessionServer(
             }))
             if (error.closeConnection) conn.close(1002, error.reason)
         } catch (error: Exception) {
-            Log.e(TAG, "Photo binary processing failed", error)
+            ReceiverLog.e(TAG, "Photo binary processing failed", error)
             conn.send(event("protocol.error", sessionId, photoInternalErrorPayload(diagnosticTransferId)))
             ReceiverRuntime.update {
                 it.copy(banner = "照片传输内部错误，其他播放不受影响", bannerIsError = true)
@@ -159,21 +168,49 @@ class CastSessionServer(
         sessionId = null
         senderId = null
         senderName = null
+        ReceiverLog.releaseSnapshot()
         ReceiverRuntime.update {
             it.copy(
                 connectedSender = null,
                 pairingRequest = null,
-                banner = if (playback.cacheAvailable()) "连接已断开，缓存内容仍可播放" else "连接已断开，等待重新连接",
-                bannerIsError = false,
+                // A fatal server error tears the connection down on its way out. Replacing that
+                // banner here would promise a reconnect that can never happen.
+                banner = when {
+                    serverFatal -> it.banner
+                    playback.cacheAvailable() -> "连接已断开，缓存内容仍可播放"
+                    else -> "连接已断开，等待重新连接"
+                },
+                bannerIsError = serverFatal && it.bannerIsError,
             )
         }
     }
 
     @Synchronized
     override fun onError(conn: WebSocket?, ex: Exception) {
-        Log.e(TAG, "WSS server error", ex)
-        ReceiverRuntime.update { it.copy(banner = "控制连接错误，正在等待重连", bannerIsError = true) }
+        // A null connection means the server itself failed (e.g. the bind lost a race for the
+        // port). That terminates the run loop, so it happens at most once per server lifetime and
+        // no peer can repeat it -- it must keep the full trace and the banner, or the receiver
+        // dies silently and this very log feature has no channel left to report it on.
+        if (conn == null) {
+            serverFatal = true
+            ReceiverLog.e(TAG, "WSS server error", ex)
+            ReceiverRuntime.update { it.copy(banner = "接收服务异常，请重启接收端", bannerIsError = true) }
+            return
+        }
+        // Java-WebSocket raises onError from decodeHandshake/decodeFrames, i.e. BEFORE onOpen, so
+        // this fires for connections that never took the session slot -- including while another
+        // sender holds a healthy session. Attributing it by the server-wide `sessionId` alone
+        // would hand any LAN host an unbudgeted, stack-trace-sized write into the retained ring.
+        if (isSessionConnection(conn)) {
+            ReceiverLog.e(TAG, "WSS server error", ex)
+            ReceiverRuntime.update { it.copy(banner = "控制连接错误，正在等待重连", bannerIsError = true) }
+        } else {
+            ReceiverLog.untrusted(TAG, "WSS error before session: ${ex.javaClass.simpleName}")
+        }
     }
+
+    private fun isSessionConnection(conn: WebSocket?): Boolean =
+        conn != null && conn == connection.get() && sessionId != null
 
     fun sendPlayerState(payload: JsonObject) {
         val active = connection.get() ?: return
@@ -321,6 +358,7 @@ class CastSessionServer(
     private fun makeReady(conn: WebSocket, trustedSenderId: String, trustedSenderName: String) {
         val newSessionId = UUID.randomUUID().toString()
         val newToken = identity.rotateTrustedToken(trustedSenderId)
+        ReceiverLog.clearUntrustedBudget()
         sessionId = newSessionId
         ledger = CommandLedger()
         playback.beginSession()
@@ -363,6 +401,7 @@ class CastSessionServer(
                             }
                         }
                         "playlist.replace" -> playback.replacePlaylist(envelope.payload)
+                        "diagnostics.logs.get" -> receiverLogChunk(envelope.payload)
                         "mode.set" -> {
                             val mode = envelope.payload["mode"]?.jsonPrimitive?.contentOrNull
                             when (mode) {
@@ -401,7 +440,7 @@ class CastSessionServer(
                 val result = event(responseType, sessionId, payload, envelope.id)
                 ledger.record(envelope.commandSeq, envelope.id, result)
                 conn.send(result)
-                Log.d(TAG, "Handled ${envelope.type}; ok=${payload["ok"]?.jsonPrimitive?.contentOrNull}")
+                ReceiverLog.d(TAG, "Handled ${envelope.type}; ok=${payload["ok"]?.jsonPrimitive?.contentOrNull}")
                 if (envelope.type == "mode.set" && payload["ok"]?.jsonPrimitive?.contentOrNull == "true") {
                     sendSessionEvent("mode.state", buildJsonObject {
                         put("mode", ReceiverRuntime.state.mode)
@@ -450,6 +489,28 @@ class CastSessionServer(
         put("ok", false)
         put("error", buildJsonObject { put("code", code); put("message", message) })
     }
+
+    private fun receiverLogChunk(payload: JsonObject): JsonObject {
+        val rawOffset = payload["offset"]
+        val rawMaxBytes = payload["maxBytes"]
+        val limit = ProtocolLimits.MAX_RECEIVER_LOG_CHUNK_BYTES.toLong()
+        // Absent means "use the default"; present-but-not-a-number is a malformed request and
+        // must not silently fall back to it.
+        val offset = if (rawOffset == null) 0L else jsonNumberOrNull(rawOffset)
+        val maxBytes = if (rawMaxBytes == null) limit else jsonNumberOrNull(rawMaxBytes)
+        if (offset == null || maxBytes == null || offset < 0L || maxBytes !in 1..limit) {
+            return errorPayload("invalid_message", "Invalid receiver log chunk range")
+        }
+        return ReceiverLog.readChunk(offset, maxBytes.toInt())
+            ?: errorPayload("invalid_state", "Receiver log snapshot expired; restart at offset 0")
+    }
+
+    /**
+     * Reads a JSON number, rejecting quoted values. `longOrNull` parses the *content*, so without
+     * the [JsonPrimitive.isString] check a quoted `"16384"` would be accepted as a number.
+     */
+    private fun jsonNumberOrNull(element: JsonElement): Long? =
+        (element as? JsonPrimitive)?.takeIf { !it.isString }?.longOrNull
 
     private fun event(type: String, activeSessionId: String?, payload: JsonObject, replyTo: String? = null): String =
         ProtocolCodec.json.encodeToString(JsonObject.serializer(), buildJsonObject {

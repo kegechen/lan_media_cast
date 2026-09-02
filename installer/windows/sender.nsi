@@ -4,7 +4,7 @@ RequestExecutionLevel admin
 SetCompressor /SOLID lzma
 
 !ifndef APP_VERSION
-!define APP_VERSION "1.0.0"
+!define APP_VERSION "1.0.1"
 !endif
 
 !define APP_NAME "LAN Media Cast"

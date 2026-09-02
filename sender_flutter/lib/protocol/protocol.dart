@@ -7,6 +7,7 @@ const int maxBinaryFrameBytes = 128 * 1024;
 const int maxNameBytes = 256;
 const int maxPlaylistItems = 500;
 const int maxPhotoItems = 9;
+const int maxReceiverLogChunkBytes = 16 * 1024;
 
 final RegExp _uuidPattern = RegExp(
   r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$',
@@ -43,6 +44,7 @@ const Set<String> _sideEffectTypes = {
   'photo.item.meta',
   'photo.batch.resume.query',
   'photo.operation',
+  'diagnostics.logs.get',
 };
 
 class ProtocolException implements Exception {
@@ -297,6 +299,49 @@ class ProtocolEnvelope {
       'ts': timestamp,
       'payload': payload,
     };
+  }
+}
+
+class ReceiverLogChunk {
+  const ReceiverLogChunk({
+    required this.offset,
+    required this.nextOffset,
+    required this.totalBytes,
+    required this.eof,
+    required this.data,
+  });
+
+  final int offset;
+  final int nextOffset;
+  final int totalBytes;
+  final bool eof;
+  final String data;
+
+  factory ReceiverLogChunk.fromPayload(Map<String, dynamic> payload) {
+    final Object? rawOffset = payload['offset'];
+    final Object? rawNextOffset = payload['nextOffset'];
+    final Object? rawTotalBytes = payload['totalBytes'];
+    final Object? rawEof = payload['eof'];
+    final Object? rawData = payload['data'];
+    if (payload['ok'] != true ||
+        payload['format'] != 'text' ||
+        rawOffset is! int ||
+        rawNextOffset is! int ||
+        rawTotalBytes is! int ||
+        rawEof is! bool ||
+        rawData is! String ||
+        rawOffset < 0 ||
+        rawNextOffset < rawOffset ||
+        rawTotalBytes < rawNextOffset) {
+      throw const FormatException('接收端日志响应无效');
+    }
+    return ReceiverLogChunk(
+      offset: rawOffset,
+      nextOffset: rawNextOffset,
+      totalBytes: rawTotalBytes,
+      eof: rawEof,
+      data: rawData,
+    );
   }
 }
 

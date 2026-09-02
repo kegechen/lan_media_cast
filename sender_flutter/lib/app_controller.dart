@@ -7,6 +7,7 @@ import 'package:crypto/crypto.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:image/image.dart' as image;
+import 'package:path/path.dart' as path;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 
@@ -280,6 +281,16 @@ Future<void> runMediaAction({
   await action();
 }
 
+/// The receiver dropped the frozen snapshot backing an in-progress log fetch.
+class _ReceiverLogSnapshotExpired implements Exception {
+  const _ReceiverLogSnapshotExpired();
+
+  // Surfaced to the user if even the restart expires, so it must read as a
+  // message rather than as "Instance of '_ReceiverLogSnapshotExpired'".
+  @override
+  String toString() => '接收端日志在取回过程中被重置，请重试';
+}
+
 bool targetsReferToSameReceiver(DeviceTarget left, DeviceTarget right) =>
     left.deviceId == right.deviceId ||
     (left.address == right.address && left.wssPort == right.wssPort);
@@ -495,6 +506,149 @@ class AppController extends ChangeNotifier {
       await _savePlaylist();
       await _syncPlaylist(autoplay: autoplay);
     });
+  }
+
+  Future<void> fetchReceiverLogs() async {
+    await _runBusy(() async {
+      if (!connection.isReady) throw StateError('接收端未连接');
+      _setStatus('正在获取接收端日志…', error: false);
+      final String filePath = await _downloadReceiverLogs();
+      await AppLog.instance.info(
+        'receiver_logs.saved',
+        fields: <String, Object?>{'path': filePath},
+      );
+      _setStatus('接收端日志已保存：${path.basename(filePath)}', error: false);
+    });
+  }
+
+  Future<String> _downloadReceiverLogs() async {
+    final String? directoryPath = AppLog.instance.directoryPath;
+    if (directoryPath == null) throw StateError('日志目录尚未初始化');
+    String contents;
+    try {
+      contents = await _readReceiverLogSnapshot();
+    } on _ReceiverLogSnapshotExpired {
+      // The receiver released the frozen image mid-fetch. Protocol v1 §4.1 says
+      // to restart at offset 0 rather than splice across two images.
+      contents = await _readReceiverLogSnapshot();
+    }
+
+    final Directory directory = Directory(directoryPath);
+    await directory.create(recursive: true);
+    final DateTime now = DateTime.now();
+    final String stamp =
+        '${now.year.toString().padLeft(4, '0')}'
+        '${now.month.toString().padLeft(2, '0')}'
+        '${now.day.toString().padLeft(2, '0')}'
+        '-${now.hour.toString().padLeft(2, '0')}'
+        '${now.minute.toString().padLeft(2, '0')}'
+        '${now.second.toString().padLeft(2, '0')}';
+    // The stamp only resolves to the second, so two fetches within the same
+    // second would otherwise truncate each other.
+    File output = File(path.join(directoryPath, 'receiver-$stamp.log'));
+    for (int copy = 1; await output.exists(); copy += 1) {
+      output = File(path.join(directoryPath, 'receiver-$stamp-$copy.log'));
+    }
+    await output.writeAsString(contents, flush: true);
+    await _pruneReceiverLogs(directory);
+    return output.path;
+  }
+
+  /// Drains one frozen receiver-side snapshot, starting at offset 0.
+  ///
+  /// Throws [_ReceiverLogSnapshotExpired] if the receiver reports that the
+  /// snapshot backing this retrieval is gone, so the caller can restart cleanly
+  /// instead of stitching together two different images of the buffer.
+  Future<String> _readReceiverLogSnapshot() async {
+    final StringBuffer contents = StringBuffer();
+    int offset = 0;
+    int? totalBytes;
+    bool reachedEnd = false;
+    const int maxChunks = 32;
+    for (int index = 0; index < maxChunks; index += 1) {
+      final Map<String, dynamic> response;
+      try {
+        response = await connection.sendCommand(
+          'diagnostics.logs.get',
+          <String, dynamic>{
+            'offset': offset,
+            'maxBytes': maxReceiverLogChunkBytes,
+          },
+        );
+      } on ReceiverCommandRejected catch (rejection) {
+        if (offset > 0 && rejection.code == 'invalid_state') {
+          throw const _ReceiverLogSnapshotExpired();
+        }
+        rethrow;
+      }
+      final ReceiverLogChunk chunk = ReceiverLogChunk.fromPayload(response);
+      if (chunk.offset != offset) {
+        throw const FormatException('接收端日志响应偏移量不连续');
+      }
+      // A receiver that re-read a live buffer per chunk would report a moving
+      // total; holding it fixed is what makes the offsets comparable at all.
+      totalBytes ??= chunk.totalBytes;
+      if (chunk.totalBytes != totalBytes) {
+        throw const FormatException('接收端日志在取回过程中发生变化');
+      }
+      final int chunkBytes = utf8.encode(chunk.data).length;
+      if (chunkBytes > maxReceiverLogChunkBytes ||
+          chunk.nextOffset != offset + chunkBytes) {
+        throw const FormatException('接收端日志响应长度无效');
+      }
+      contents.write(chunk.data);
+      if (chunk.eof) {
+        reachedEnd = true;
+        break;
+      }
+      if (chunk.nextOffset <= offset) {
+        throw const FormatException('接收端日志响应未向前推进');
+      }
+      offset = chunk.nextOffset;
+    }
+    if (!reachedEnd) throw StateError('接收端日志超过单次获取大小限制');
+    return contents.toString();
+  }
+
+  /// Keeps receiver log retention bounded like the sender's own rolling log:
+  /// [AppLog] only rotates `sender.log`, so nothing else would ever reclaim
+  /// these files and each fetch adds up to 256 KiB.
+  Future<void> _pruneReceiverLogs(Directory directory) async {
+    try {
+      final List<File> logs = <File>[];
+      await for (final FileSystemEntity entity in directory.list()) {
+        final String name = path.basename(entity.path);
+        if (entity is File &&
+            name.startsWith('receiver-') &&
+            name.endsWith('.log')) {
+          logs.add(entity);
+        }
+      }
+      if (logs.length <= _retainedReceiverLogs) return;
+      // Sort by mtime rather than by name: same-second fetches get a `-1`
+      // suffix, and '-' sorts before '.', so name order would put
+      // `receiver-<stamp>-1.log` *before* the older `receiver-<stamp>.log`.
+      final List<(File, DateTime)> dated = <(File, DateTime)>[
+        for (final File log in logs) (log, (await log.stat()).modified),
+      ]..sort(
+        ((File, DateTime) left, (File, DateTime) right) =>
+            left.$2.compareTo(right.$2),
+      );
+      for (final (File stale, _) in dated.take(
+        dated.length - _retainedReceiverLogs,
+      )) {
+        await stale.delete();
+      }
+    } on Object catch (error, stackTrace) {
+      // Pruning is housekeeping; a failure must not fail the fetch itself.
+      unawaited(
+        AppLog.instance.error(
+          'receiver_logs.prune_failed',
+          error,
+          stackTrace: stackTrace,
+        ),
+      );
+    }
   }
 
   Future<void> pickPhotos() async {
@@ -1375,6 +1529,7 @@ class AppController extends ChangeNotifier {
     super.dispose();
   }
 
+  static const int _retainedReceiverLogs = 3;
   static const String _photoBatchKey = 'active_photo_batch_v1';
   static const String _playlistKey = 'playlist_v1';
   static const Duration _resolvedWebSourceMaxAge = Duration(minutes: 10);

@@ -14,6 +14,17 @@ import 'device_discovery.dart';
 
 enum ConnectionPhase { disconnected, connecting, pairing, ready, reconnecting }
 
+/// A command the receiver answered with `ok: false`.
+///
+/// Extends [StateError] so existing callers and [userFacingError] keep behaving
+/// exactly as before, while carrying the protocol [code] for the few callers
+/// that need to branch on it.
+class ReceiverCommandRejected extends StateError {
+  ReceiverCommandRejected(this.code, super.message);
+
+  final String? code;
+}
+
 class RemotePlayerState {
   const RemotePlayerState({
     required this.state,
@@ -62,6 +73,17 @@ class CastConnection extends ChangeNotifier {
   String? errorMessage;
   RemotePlayerState? playerState;
   Future<void> Function()? onReady;
+
+  /// Set when the receiver presented a certificate that does not match the
+  /// stored pin. Reconnecting is suspended until the user resolves it through
+  /// [trustChangedReceiver] or [disconnect].
+  bool certificateChanged = false;
+
+  /// Fingerprints behind [certificateChanged], so the user can compare them
+  /// instead of deciding from a device name that discovery does not
+  /// authenticate.
+  String? pinnedFingerprint;
+  String? presentedFingerprint;
 
   WebSocket? _socket;
   StreamSubscription<dynamic>? _subscription;
@@ -134,6 +156,9 @@ class CastConnection extends ChangeNotifier {
     await _closeSocket();
     target = device;
     _manualDisconnect = false;
+    certificateChanged = false;
+    pinnedFingerprint = null;
+    presentedFingerprint = null;
     _reconnectAttempt = 0;
     await _connectInternal(reconnecting: false);
   }
@@ -151,6 +176,9 @@ class CastConnection extends ChangeNotifier {
     _challengeId = null;
     _challengeExpiresAt = null;
     errorMessage = null;
+    certificateChanged = false;
+    pinnedFingerprint = null;
+    presentedFingerprint = null;
     _notifyListeners();
     unawaited(AppLog.instance.info('connection.disconnected_by_user'));
   }
@@ -229,10 +257,7 @@ class CastConnection extends ChangeNotifier {
       ),
     );
 
-    final List<String> credentialDeviceIds = <String>{
-      device.deviceId,
-      _manualDeviceId(device),
-    }.toList(growable: false);
+    final List<String> credentialDeviceIds = _credentialDeviceIds(device);
     String? credentialDeviceId;
     String? pinnedText;
     for (final String deviceId in credentialDeviceIds) {
@@ -249,14 +274,17 @@ class CastConnection extends ChangeNotifier {
       ..connectionTimeout = const Duration(seconds: 3)
       ..idleTimeout = const Duration(seconds: 15);
     Uint8List? observedPin;
+    bool pinMismatch = false;
     client.badCertificateCallback =
         (X509Certificate certificate, String host, int port) {
           final Uint8List actual = Uint8List.fromList(
             sha256.convert(certificate.der).bytes,
           );
           observedPin = actual;
-          return expectedPin == null ||
-              _constantTimeEquals(expectedPin, actual);
+          if (expectedPin == null) return true;
+          final bool matches = _constantTimeEquals(expectedPin, actual);
+          if (!matches) pinMismatch = true;
+          return matches;
         };
     try {
       final WebSocket socket = await WebSocket.connect(
@@ -266,6 +294,7 @@ class CastConnection extends ChangeNotifier {
       if (observedPin == null) throw const TlsException('未取得接收端证书');
       if (expectedPin != null &&
           !_constantTimeEquals(expectedPin, observedPin!)) {
+        pinMismatch = true;
         throw const TlsException('接收端身份已变化');
       }
       _currentCertificateDigest = observedPin;
@@ -278,6 +307,10 @@ class CastConnection extends ChangeNotifier {
       );
       _lastActivity = DateTime.now();
       _startHeartbeat();
+      // The trusted token is a bearer credential: only hand it over once the
+      // receiver's certificate has been matched against a stored pin. On a
+      // trust-on-first-use connection the peer is unverified, so we withhold it
+      // and let the receiver ask for pairing instead.
       final String? trustedToken = expectedPin == null
           ? null
           : await _secureStorage.read(key: _tokenKey(credentialDeviceId!));
@@ -318,8 +351,87 @@ class CastConnection extends ChangeNotifier {
       client.close(force: true);
       errorMessage = _connectionError(error);
       await _closeSocket();
+      if (pinMismatch) {
+        _enterCertificateChanged(expectedPin, observedPin);
+        return;
+      }
       _scheduleReconnect();
     }
+  }
+
+  /// The stored pin no longer matches the receiver. Retrying can never succeed,
+  /// so stop reconnecting and wait for the user to decide whether to re-trust.
+  void _enterCertificateChanged(Uint8List? expected, Uint8List? presented) {
+    if (_disposed) return;
+    _manualDisconnect = true;
+    _reconnectTimer?.cancel();
+    _reconnectTimer = null;
+    _reconnectAttempt = 0;
+    certificateChanged = true;
+    pinnedFingerprint = expected == null ? null : _encodeBase64Url(expected);
+    presentedFingerprint = presented == null
+        ? null
+        : _encodeBase64Url(presented);
+    errorMessage = '接收端身份已变化，需要重新确认信任';
+    phase = ConnectionPhase.disconnected;
+    sessionId = null;
+    remotePlaylistRevision = null;
+    _challengeId = null;
+    _challengeExpiresAt = null;
+    _notifyListeners();
+    unawaited(
+      AppLog.instance.warning(
+        'connection.certificate_changed',
+        fields: <String, Object?>{
+          'address': target?.address,
+          'port': target?.wssPort,
+        },
+      ),
+    );
+  }
+
+  /// Drops the stored pin and token for the current target and reconnects.
+  ///
+  /// Only call this after the user has explicitly confirmed the change. The
+  /// token is dropped together with the pin so the new identity has to be
+  /// re-established through pairing rather than by replaying a credential that
+  /// was issued to the previous one.
+  Future<void> trustChangedReceiver() async {
+    if (_disposed) throw StateError('连接对象已释放');
+    final DeviceTarget? device = target;
+    if (device == null || !certificateChanged) {
+      throw StateError('当前没有待重新信任的接收端');
+    }
+    unawaited(
+      AppLog.instance.warning(
+        'connection.certificate_retrusted',
+        fields: <String, Object?>{
+          'address': device.address,
+          'port': device.wssPort,
+        },
+      ),
+    );
+    try {
+      for (final String deviceId in _credentialDeviceIds(device)) {
+        await _secureStorage.delete(key: _pinKey(deviceId));
+        await _secureStorage.delete(key: _tokenKey(deviceId));
+      }
+    } on Object {
+      // Stay in the certificate-changed state so the prompt can be raised
+      // again; silently clearing it would strand the connection with no way
+      // back short of restarting the app.
+      errorMessage = '无法清除接收端信任信息，请重试';
+      _notifyListeners();
+      rethrow;
+    }
+    certificateChanged = false;
+    pinnedFingerprint = null;
+    presentedFingerprint = null;
+    errorMessage = null;
+    _manualDisconnect = false;
+    _reconnectAttempt = 0;
+    _notifyListeners();
+    await _connectInternal(reconnecting: false);
   }
 
   void _onMessage(dynamic raw) {
@@ -623,7 +735,7 @@ class CastConnection extends ChangeNotifier {
         rawError['message'] as String? ?? '命令被拒绝',
       _ => '命令被拒绝',
     };
-    throw StateError(message);
+    throw ReceiverCommandRejected(code, message);
   }
 
   void _startHeartbeat() {
@@ -724,6 +836,15 @@ class CastConnection extends ChangeNotifier {
 
   String _manualDeviceId(DeviceTarget device) =>
       'manual-${device.address}-${device.wssPort}';
+
+  /// Credentials are written under both the resolved device id and the
+  /// address-derived manual id, so a lookup has to consider both: a receiver
+  /// first reached manually and later found through discovery (or the reverse)
+  /// must still resolve to the same stored pin.
+  List<String> _credentialDeviceIds(DeviceTarget device) => <String>{
+    device.deviceId,
+    _manualDeviceId(device),
+  }.toList(growable: false);
   String _pinKey(String deviceId) => 'receiver_pin_$deviceId';
   String _tokenKey(String deviceId) => 'receiver_token_$deviceId';
   String _encodeBase64Url(List<int> bytes) =>
