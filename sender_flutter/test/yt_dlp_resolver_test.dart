@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:lan_media_cast_sender/services/douyin_browser_resolver.dart';
+import 'package:lan_media_cast_sender/services/windows_system_proxy.dart';
 import 'package:lan_media_cast_sender/services/yt_dlp_resolver.dart';
 
 void main() {
@@ -434,6 +435,161 @@ void main() {
 
     await expectLater(running, throwsA(isA<YtDlpException>()));
   });
+
+  _cookieFallbackTests();
+}
+
+YtDlpResolver _resolverWith(YtDlpProcessRunner runner) => YtDlpResolver(
+  processRunner: runner,
+  executableLocator: () => 'yt-dlp.exe',
+  isWindows: true,
+  environment: () => const <String, String>{},
+  systemProxyReader: () async => null,
+);
+
+String _successPayload() => jsonEncode(<String, Object>{
+  'title': 'Example lesson',
+  'webpage_url': 'https://video.example/watch/1',
+  'url': 'https://cdn.example/video.mp4',
+  'protocol': 'https',
+  'ext': 'mp4',
+  'http_headers': <String, Object>{'User-Agent': 'yt-dlp test'},
+});
+
+void _cookieFallbackTests() {
+  test('unreadable browser cookies fall back to an anonymous retry', () async {
+    // Chrome/Edge 127+ encrypt their cookie store so it cannot be read from
+    // outside the browser. Cookies are optional for most pages, so this must
+    // degrade rather than fail the whole resolution.
+    final _ScriptedRunner runner = _ScriptedRunner(<YtDlpProcessResult>[
+      const YtDlpProcessResult(
+        exitCode: 1,
+        stdout: '',
+        stderr: 'ERROR: Failed to decrypt with DPAPI. See https://... for info',
+      ),
+      YtDlpProcessResult(exitCode: 0, stdout: _successPayload(), stderr: ''),
+    ]);
+
+    final ResolvedWebVideo result = await _resolverWith(runner).resolve(
+      Uri.parse('https://video.example/watch/1'),
+      cookieBrowser: YtDlpBrowser.chrome,
+    );
+
+    expect(runner.calls, 2);
+    expect(runner.invocations.first, contains('--cookies-from-browser'));
+    expect(runner.invocations.last, isNot(contains('--cookies-from-browser')));
+    expect(result.notice, contains('未能读取'));
+    // The stored source must not keep pointing at a cookie store that failed.
+    expect(result.cookieBrowser, isNull);
+  });
+
+  test('a page that truly needs login still reports that', () async {
+    final _ScriptedRunner runner = _ScriptedRunner(<YtDlpProcessResult>[
+      const YtDlpProcessResult(
+        exitCode: 1,
+        stdout: '',
+        stderr: 'ERROR: Failed to decrypt with DPAPI.',
+      ),
+      const YtDlpProcessResult(
+        exitCode: 1,
+        stdout: '',
+        stderr: "ERROR: Sign in to confirm you're not a bot.",
+      ),
+    ]);
+
+    await expectLater(
+      _resolverWith(runner).resolve(
+        Uri.parse('https://video.example/watch/1'),
+        cookieBrowser: YtDlpBrowser.chrome,
+      ),
+      throwsA(
+        isA<YtDlpException>().having(
+          (YtDlpException error) => error.message,
+          'message',
+          contains('需要登录'),
+        ),
+      ),
+    );
+    expect(runner.calls, 2);
+  });
+
+  test('a failed retry reports its own error, not the cookie one', () async {
+    // The diagnostic sanitizer keeps only the last "error:" line, so appending
+    // the cookie failure used to overwrite the retry's real reason and blame
+    // the cookie store for an unrelated network fault.
+    final _ScriptedRunner runner = _ScriptedRunner(<YtDlpProcessResult>[
+      const YtDlpProcessResult(
+        exitCode: 1,
+        stdout: '',
+        stderr: 'ERROR: Failed to decrypt with DPAPI.',
+      ),
+      const YtDlpProcessResult(
+        exitCode: 1,
+        stdout: '',
+        stderr: 'ERROR: Unable to download webpage: HTTP Error 412',
+      ),
+    ]);
+
+    await expectLater(
+      _resolverWith(runner).resolve(
+        Uri.parse('https://video.example/watch/1'),
+        cookieBrowser: YtDlpBrowser.chrome,
+      ),
+      throwsA(
+        isA<YtDlpException>()
+            .having(
+              (YtDlpException error) => error.message,
+              'keeps the retry error',
+              contains('HTTP Error 412'),
+            )
+            .having(
+              (YtDlpException error) => error.message,
+              'still mentions the cookie failure',
+              contains('DPAPI'),
+            ),
+      ),
+    );
+  });
+
+  test('a non-cookie failure is not retried', () async {
+    final _ScriptedRunner runner = _ScriptedRunner(<YtDlpProcessResult>[
+      const YtDlpProcessResult(
+        exitCode: 1,
+        stdout: '',
+        stderr: 'ERROR: Unsupported URL: https://video.example/watch/1',
+      ),
+    ]);
+
+    await expectLater(
+      _resolverWith(runner).resolve(
+        Uri.parse('https://video.example/watch/1'),
+        cookieBrowser: YtDlpBrowser.chrome,
+      ),
+      throwsA(isA<YtDlpException>()),
+    );
+    expect(runner.calls, 1);
+  });
+
+  test('the system proxy reaches the yt-dlp process', () async {
+    final _ScriptedRunner runner = _ScriptedRunner(<YtDlpProcessResult>[
+      YtDlpProcessResult(exitCode: 0, stdout: _successPayload(), stderr: ''),
+    ]);
+    final YtDlpResolver resolver = YtDlpResolver(
+      processRunner: runner,
+      executableLocator: () => 'yt-dlp.exe',
+      isWindows: true,
+      environment: () => const <String, String>{'NO_PROXY': 'corp.example'},
+      systemProxyReader: () async =>
+          const WindowsSystemProxy(
+            httpServer: 'http://127.0.0.1:10808',
+            httpsServer: 'http://127.0.0.1:10808',
+          ),
+    );
+
+    await resolver.resolve(Uri.parse('https://video.example/watch/1'));
+
+    expect(runner.environments.single['HTTPS_PROXY'], 'http://127.0.0.1:10808');
+  });
 }
 
 String _dartExecutable() {
@@ -445,13 +601,15 @@ String _dartExecutable() {
       '${Platform.pathSeparator}$executable';
 }
 
-class _FakeRunner implements YtDlpProcessRunner {
-  _FakeRunner(this.result);
+/// Returns a different result per call, so a retry can be observed.
+class _ScriptedRunner implements YtDlpProcessRunner {
+  _ScriptedRunner(this._results);
 
-  final YtDlpProcessResult result;
-  int calls = 0;
-  bool cancelled = false;
-  List<String> arguments = <String>[];
+  final List<YtDlpProcessResult> _results;
+  final List<List<String>> invocations = <List<String>>[];
+  final List<Map<String, String>> environments = <Map<String, String>>[];
+
+  int get calls => invocations.length;
 
   @override
   Future<YtDlpProcessResult> run(
@@ -460,9 +618,38 @@ class _FakeRunner implements YtDlpProcessRunner {
     required Duration timeout,
     required int maxStdoutBytes,
     required int maxStderrBytes,
+    Map<String, String> environment = const <String, String>{},
+  }) async {
+    invocations.add(arguments);
+    environments.add(environment);
+    return _results[invocations.length - 1];
+  }
+
+  @override
+  void cancel() {}
+}
+
+class _FakeRunner implements YtDlpProcessRunner {
+  _FakeRunner(this.result);
+
+  final YtDlpProcessResult result;
+  int calls = 0;
+  bool cancelled = false;
+  List<String> arguments = <String>[];
+  Map<String, String> environment = const <String, String>{};
+
+  @override
+  Future<YtDlpProcessResult> run(
+    String executable,
+    List<String> arguments, {
+    required Duration timeout,
+    required int maxStdoutBytes,
+    required int maxStderrBytes,
+    Map<String, String> environment = const <String, String>{},
   }) async {
     calls += 1;
     this.arguments = arguments;
+    this.environment = environment;
     return result;
   }
 

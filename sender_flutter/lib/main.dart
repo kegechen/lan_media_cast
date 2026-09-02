@@ -655,7 +655,7 @@ class _StatusBanner extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final String? message = controller.statusMessage;
+    final String? message = controller.bannerMessage;
     return AnimatedContainer(
       duration: const Duration(milliseconds: 180),
       height: message == null ? 0 : 42,

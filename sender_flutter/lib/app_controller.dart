@@ -348,6 +348,16 @@ class AppController extends ChangeNotifier {
   final List<DeviceTarget> devices = <DeviceTarget>[];
   final List<SenderPlaylistItem> playlist = <SenderPlaylistItem>[];
 
+  /// Non-fatal explanation for the most recent web video resolution, e.g. the
+  /// browser cookie store could not be read. Deliberately separate from
+  /// [statusMessage]; see [_setWebVideoNotice].
+  String? webVideoNotice;
+
+  /// What the status banner should show. An error always wins; the sticky
+  /// web-video notice only surfaces when there is nothing more urgent to say.
+  /// Lives here rather than in the widget so the precedence is testable.
+  String? get bannerMessage => statusMessage ?? webVideoNotice;
+
   bool scanning = false;
   bool busy = false;
   String repeatMode = 'playOnce';
@@ -881,6 +891,10 @@ class AppController extends ChangeNotifier {
       return;
     }
     await _runBusy(() async {
+      // Drop any previous notice up front: if this resolution fails, a stale
+      // one would resurface the moment the error status is cleared and appear
+      // to describe the new URL.
+      webVideoNotice = null;
       if (webVideoResolver.requiresExtraction(uri)) {
         _setStatus(
           Platform.isWindows && isDouyinPageUri(uri)
@@ -906,6 +920,7 @@ class AppController extends ChangeNotifier {
       _playlistRevision += 1;
       await _savePlaylist();
       _clearStatus();
+      _setWebVideoNotice(resolved.notice);
       await _syncPlaylist(autoplay: autoplay);
     });
   }
@@ -913,6 +928,9 @@ class AppController extends ChangeNotifier {
   Future<void> removeItem(int index) async {
     if (index < 0 || index >= playlist.length) return;
     playlist.removeAt(index);
+    // The notice explains a specific resolution; once its item is gone it would
+    // otherwise keep explaining something the user can no longer see.
+    webVideoNotice = null;
     mediaServer.retainAssets(
       playlist
           .map((SenderPlaylistItem item) => item.localAsset?.assetId)
@@ -963,6 +981,7 @@ class AppController extends ChangeNotifier {
         _playlistRevision += 1;
         await _savePlaylist();
         _clearStatus();
+        _setWebVideoNotice(refreshed.notice);
         await _syncPlaylist();
         await _sendMediaCommand('player.select', <String, Object>{
           'itemId': item.id,
@@ -1501,7 +1520,29 @@ class AppController extends ChangeNotifier {
   }
 
   void dismissStatus() {
+    webVideoNotice = null;
     _clearStatus();
+  }
+
+  /// Sets the sticky web-video notice without disturbing [statusMessage].
+  ///
+  /// It cannot ride on the status: `_send` swallows command failures into an
+  /// error status, so writing the notice afterwards would paint a failed cast
+  /// green; and `_onConnectionChanged` clears any non-error status on every
+  /// receiver state push, which arrives within milliseconds of a successful
+  /// playlist sync. Either way the user would be misinformed.
+  void _setWebVideoNotice(String? notice) {
+    if (_disposed) return;
+    webVideoNotice = notice;
+    if (notice != null) {
+      unawaited(
+        AppLog.instance.warning(
+          'web_video.resolved_with_notice',
+          fields: <String, Object?>{'notice': notice},
+        ),
+      );
+    }
+    _notifyListeners();
   }
 
   void _clearStatus({bool notify = true}) {

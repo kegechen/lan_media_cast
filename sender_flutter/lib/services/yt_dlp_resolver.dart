@@ -4,6 +4,7 @@ import 'dart:io';
 
 import '../protocol/remote_http_headers.dart';
 import 'douyin_browser_resolver.dart';
+import 'windows_system_proxy.dart';
 
 const Duration defaultYtDlpTimeout = Duration(seconds: 45);
 const int defaultYtDlpStdoutLimit = 8 * 1024 * 1024;
@@ -54,6 +55,7 @@ class ResolvedWebVideo {
     this.webpageUrl,
     this.resolvedAt,
     this.cookieBrowser,
+    this.notice,
   });
 
   final ResolvedWebVideoTrack primaryTrack;
@@ -62,6 +64,10 @@ class ResolvedWebVideo {
   final Uri? webpageUrl;
   final int? resolvedAt;
   final YtDlpBrowser? cookieBrowser;
+
+  /// Set when resolution succeeded but something the user asked for was
+  /// silently dropped, e.g. an unreadable browser cookie store.
+  final String? notice;
 
   Uri get url => primaryTrack.url;
   String? get formatHint => primaryTrack.formatHint;
@@ -89,6 +95,7 @@ abstract interface class YtDlpProcessRunner {
     required Duration timeout,
     required int maxStdoutBytes,
     required int maxStderrBytes,
+    Map<String, String> environment = const <String, String>{},
   });
 
   void cancel();
@@ -106,6 +113,7 @@ class BoundedYtDlpProcessRunner implements YtDlpProcessRunner {
     required Duration timeout,
     required int maxStdoutBytes,
     required int maxStderrBytes,
+    Map<String, String> environment = const <String, String>{},
   }) async {
     if (_activeProcess != null || _startPending) {
       throw const YtDlpException('已有网页视频正在解析，请稍候');
@@ -114,7 +122,13 @@ class BoundedYtDlpProcessRunner implements YtDlpProcessRunner {
     _startPending = true;
     final Process process;
     try {
-      process = await Process.start(executable, arguments, runInShell: false);
+      process = await Process.start(
+        executable,
+        arguments,
+        runInShell: false,
+        // Merged on top of this process's environment, not a replacement.
+        environment: environment.isEmpty ? null : environment,
+      );
     } finally {
       _startPending = false;
     }
@@ -191,9 +205,13 @@ class YtDlpResolver implements WebVideoResolver {
     String Function()? executableLocator,
     DouyinBrowserResolver? douyinBrowserResolver,
     bool? isWindows,
+    Map<String, String> Function()? environment,
+    Future<WindowsSystemProxy?> Function()? systemProxyReader,
     this.timeout = defaultYtDlpTimeout,
   }) : _processRunner = processRunner ?? BoundedYtDlpProcessRunner(),
        _executableLocator = executableLocator ?? _locateYtDlpExecutable,
+       _environment = environment ?? (() => Platform.environment),
+       _systemProxyReader = systemProxyReader ?? readWindowsSystemProxy,
        _isWindows = isWindows ?? Platform.isWindows {
     _douyinBrowserResolver =
         douyinBrowserResolver ??
@@ -202,9 +220,12 @@ class YtDlpResolver implements WebVideoResolver {
 
   final YtDlpProcessRunner _processRunner;
   final String Function() _executableLocator;
+  final Map<String, String> Function() _environment;
+  final Future<WindowsSystemProxy?> Function() _systemProxyReader;
   final bool _isWindows;
   late final DouyinBrowserResolver? _douyinBrowserResolver;
   final Duration timeout;
+  bool _cancelRequested = false;
 
   @override
   bool requiresExtraction(Uri uri) => !isDirectMediaUri(uri);
@@ -219,50 +240,53 @@ class YtDlpResolver implements WebVideoResolver {
       throw const YtDlpException('Android 发送端暂只支持媒体直链；网页视频解析请使用 Windows 发送端');
     }
 
-    final YtDlpProcessResult result;
+    _cancelRequested = false;
+    // Reading the system proxy spawns a process, so a cancel can land here.
+    // Arming the flag before the await (and re-checking after) keeps that
+    // window from silently launching yt-dlp anyway.
+    final Map<String, String> proxyEnvironment = ytDlpProxyEnvironment(
+      parentEnvironment: _environment(),
+      systemProxy: await _systemProxyReader(),
+      targetHost: uri.host,
+      targetIsHttp: uri.scheme.toLowerCase() == 'http',
+    );
+    if (_cancelRequested) throw const YtDlpException('网页视频解析已取消');
+
+    YtDlpProcessResult result;
+    YtDlpBrowser? usedCookieBrowser = cookieBrowser;
+    String? notice;
+    bool cookieSourceUnavailable = false;
+    String? cookieFailureStderr;
     try {
-      final List<String> arguments = <String>[
-        '--ignore-config',
-        '--no-playlist',
-        '--skip-download',
-        '--no-warnings',
-        '--no-progress',
-        '--no-color',
-        '--socket-timeout',
-        '10',
-        '--retries',
-        '1',
-        '--extractor-retries',
-        '1',
-        '--fragment-retries',
-        '1',
-      ];
-      if (cookieBrowser != null) {
-        arguments.addAll(<String>[
-          '--cookies-from-browser',
-          cookieBrowser.name,
-        ]);
+      result = await _runYtDlp(uri, cookieBrowser, proxyEnvironment);
+      // Browser cookies are an optional enhancement, so a failure to read them
+      // must not sink the whole resolution -- most pages need no login at all.
+      // On Windows this is the common case rather than an edge case: Chromium's
+      // App-Bound Encryption (Chrome/Edge 127+) makes the cookie store
+      // undecryptable from outside the browser, so the default cookie source
+      // always fails.
+      if (result.exitCode != 0 &&
+          cookieBrowser != null &&
+          isCookieSourceFailureStderr(result.stderr)) {
+        cookieSourceUnavailable = true;
+        cookieFailureStderr = result.stderr;
+        // Set now, not on success: the Douyin browser fallback returns from
+        // inside the failure branch below, and would otherwise report nothing.
+        notice = '未能读取${_browserLabel(cookieBrowser)}的登录状态，已按未登录解析';
+        // The runner clears its cancel flag on entry, so a cancel that landed
+        // between the two runs would be forgotten and spawn a second process
+        // with nothing left to stop it.
+        if (_cancelRequested) {
+          throw const YtDlpException('网页视频解析已取消');
+        }
+        final YtDlpProcessResult retry = await _runYtDlp(
+          uri,
+          null,
+          proxyEnvironment,
+        );
+        usedCookieBrowser = null;
+        result = retry;
       }
-      arguments.addAll(<String>[
-        '--format',
-        'bv[vcodec^=avc1][protocol^=http]+ba[acodec^=mp4a][protocol^=http]/'
-            'bv[vcodec^=avc1][protocol^=http]+ba[protocol^=http]/'
-            'bv[protocol^=http]+ba[protocol^=http]/'
-            'bv[vcodec^=avc1]+ba[acodec^=mp4a]/'
-            'bv+ba/'
-            'b[acodec!=none][vcodec!=none][protocol^=http]/'
-            'b[acodec!=none][vcodec!=none]',
-        '--dump-single-json',
-        '--',
-        uri.toString(),
-      ]);
-      result = await _processRunner.run(
-        _executableLocator(),
-        arguments,
-        timeout: timeout,
-        maxStdoutBytes: defaultYtDlpStdoutLimit,
-        maxStderrBytes: defaultYtDlpStderrLimit,
-      );
     } on TimeoutException {
       throw const YtDlpException('网页视频解析超时，请检查网络后重试');
     } on ProcessException {
@@ -295,7 +319,8 @@ class YtDlpResolver implements WebVideoResolver {
             name: _boundedName(browserResult.title),
             webpageUrl: uri,
             resolvedAt: DateTime.now().millisecondsSinceEpoch,
-            cookieBrowser: cookieBrowser,
+            cookieBrowser: usedCookieBrowser,
+            notice: notice,
           );
         } on DouyinBrowserException catch (error) {
           final String diagnostic = _sanitizedYtDlpDiagnostic(result.stderr);
@@ -304,7 +329,13 @@ class YtDlpResolver implements WebVideoResolver {
           );
         }
       }
-      throw _failureFor(result, cookieBrowser);
+      throw _failureFor(
+        result,
+        usedCookieBrowser,
+        requestedCookieBrowser: cookieBrowser,
+        cookieSourceUnavailable: cookieSourceUnavailable,
+        cookieFailureStderr: cookieFailureStderr,
+      );
     }
 
     final Map<String, dynamic> metadata;
@@ -328,12 +359,16 @@ class YtDlpResolver implements WebVideoResolver {
       name: _boundedName(rawTitle.isEmpty ? _nameFromUri(uri) : rawTitle),
       webpageUrl: uri,
       resolvedAt: DateTime.now().millisecondsSinceEpoch,
-      cookieBrowser: cookieBrowser,
+      // Record what was actually used, not what was asked for, so a refresh
+      // does not keep retrying an unreadable cookie store.
+      cookieBrowser: usedCookieBrowser,
+      notice: notice,
     );
   }
 
   @override
   void cancel() {
+    _cancelRequested = true;
     _processRunner.cancel();
     _douyinBrowserResolver?.cancel();
   }
@@ -414,33 +449,121 @@ class YtDlpResolver implements WebVideoResolver {
     );
   }
 
+  Future<YtDlpProcessResult> _runYtDlp(
+    Uri uri,
+    YtDlpBrowser? cookieBrowser,
+    Map<String, String> proxyEnvironment,
+  ) {
+    final List<String> arguments = <String>[
+      '--ignore-config',
+      '--no-playlist',
+      '--skip-download',
+      '--no-warnings',
+      '--no-progress',
+      '--no-color',
+      '--socket-timeout',
+      '10',
+      '--retries',
+      '1',
+      '--extractor-retries',
+      '1',
+      '--fragment-retries',
+      '1',
+    ];
+    if (cookieBrowser != null) {
+      arguments.addAll(<String>['--cookies-from-browser', cookieBrowser.name]);
+    }
+    arguments.addAll(<String>[
+      '--format',
+      'bv[vcodec^=avc1][protocol^=http]+ba[acodec^=mp4a][protocol^=http]/'
+          'bv[vcodec^=avc1][protocol^=http]+ba[protocol^=http]/'
+          'bv[protocol^=http]+ba[protocol^=http]/'
+          'bv[vcodec^=avc1]+ba[acodec^=mp4a]/'
+          'bv+ba/'
+          'b[acodec!=none][vcodec!=none][protocol^=http]/'
+          'b[acodec!=none][vcodec!=none]',
+      '--dump-single-json',
+      '--',
+      uri.toString(),
+    ]);
+    return _processRunner.run(
+      _executableLocator(),
+      arguments,
+      timeout: timeout,
+      maxStdoutBytes: defaultYtDlpStdoutLimit,
+      maxStderrBytes: defaultYtDlpStderrLimit,
+      environment: proxyEnvironment,
+    );
+  }
+
   YtDlpException _failureFor(
     YtDlpProcessResult result,
-    YtDlpBrowser? cookieBrowser,
-  ) {
+    YtDlpBrowser? cookieBrowser, {
+    YtDlpBrowser? requestedCookieBrowser,
+    bool cookieSourceUnavailable = false,
+    String? cookieFailureStderr,
+  }) {
     final String detail = result.stderr.toLowerCase();
-    final String diagnostic = _sanitizedYtDlpDiagnostic(result.stderr);
+    // Sanitize the two runs separately and join. _sanitizedYtDlpDiagnostic
+    // keeps only the LAST "error:" line, so concatenating first would let the
+    // cookie failure swallow the retry's real error -- exactly the masking this
+    // is meant to prevent. The retry's error leads, since it is why resolution
+    // actually failed.
+    final String retryDiagnostic = _sanitizedYtDlpDiagnostic(result.stderr);
+    final String cookieDiagnostic = cookieFailureStderr == null
+        ? ''
+        : _sanitizedYtDlpDiagnostic(cookieFailureStderr);
+    final String diagnostic = <String>[
+      retryDiagnostic,
+      cookieDiagnostic,
+    ].where((String part) => part.isNotEmpty).join('；');
     if (detail.contains('unsupported url')) {
       return YtDlpException(
         _withYtDlpDiagnostic('当前 yt-dlp 不支持这个网页地址', diagnostic),
       );
     }
-    if (detail.contains('drm')) {
+    // Matched as a phrase, not a bare token: `detail` is raw stderr, so a
+    // \b-bounded "drm" still fires on a URL path like /drm/master.m3u8 and
+    // would report a plain 404 as a DRM restriction.
+    if (detail.contains('drm protected') ||
+        detail.contains('drm-protected') ||
+        detail.contains('drm is not supported')) {
       return YtDlpException(
         _withYtDlpDiagnostic('该视频受 DRM 保护，无法投放', diagnostic),
       );
     }
-    if (detail.contains('sign in') ||
-        detail.contains('login') ||
-        detail.contains('cookies')) {
+    // Deliberately does NOT match a bare "cookies": yt-dlp appends a generic
+    // "use --cookies-from-browser ... for the authentication" hint to unrelated
+    // failures, and matching it reported network problems as "needs login",
+    // sending the user to a cookie source that cannot work anyway.
+    // Note there is deliberately no standalone "cookie store unreadable" branch
+    // here: whenever a browser was requested and its store failed, the retry
+    // above already re-ran without cookies, so `result` is that anonymous run
+    // and can never carry a cookie-store error. The combined message below is
+    // the only place that condition still needs reporting.
+    if (isLoginRequiredStderr(result.stderr)) {
+      // Both facts matter when the cookie store could not be read: the page
+      // wants a login AND the login state we were told to use is unreachable.
+      // Reporting only the first sends the user back to a dead end.
+      if (cookieSourceUnavailable) {
+        return YtDlpException(
+          _withYtDlpDiagnostic(
+            '该网页需要登录，但无法读取${_browserLabel(requestedCookieBrowser)}的登录状态。'
+            'Chrome 与 Edge 127 起启用了应用绑定加密，外部程序无法解密其 Cookie；'
+            '请改用 Firefox 的登录状态',
+            diagnostic,
+          ),
+        );
+      }
       if (cookieBrowser == null) {
         return YtDlpException(
-          _withYtDlpDiagnostic('该网页需要登录，请在添加链接时选择使用浏览器登录状态', diagnostic),
+          _withYtDlpDiagnostic('该网页需要登录，请在添加链接时勾选“使用浏览器登录状态”', diagnostic),
         );
       }
       return YtDlpException(
         _withYtDlpDiagnostic(
-          '无法使用 ${cookieBrowser.name} 的登录状态，请确认已在该浏览器登录',
+          '已使用${_browserLabel(cookieBrowser)}的登录状态，但该网页仍要求登录，'
+          '请确认已在该浏览器登录并可正常观看',
           diagnostic,
         ),
       );
@@ -464,6 +587,72 @@ class YtDlpException implements Exception {
   @override
   String toString() => message;
 }
+
+/// True when yt-dlp failed while reading the browser cookie store rather than
+/// while fetching the page.
+///
+/// These abort before any network request, so the failure says nothing about
+/// the page itself and the run is worth repeating without cookies.
+bool isCookieSourceFailureStderr(String stderr) {
+  final String detail = stderr.toLowerCase();
+  return detail.contains('failed to decrypt with dpapi') ||
+      detail.contains('failed to decrypt cookie') ||
+      detail.contains('unsupported browser') ||
+      (detail.contains('could not copy') && detail.contains('cookie')) ||
+      (detail.contains('could not find') &&
+          detail.contains('cookies database')) ||
+      (detail.contains('permission denied') && detail.contains('cookie'));
+}
+
+/// Phrasings yt-dlp extractors actually use when a page needs an account.
+///
+/// Matching the bare word `cookies` used to stand in for this, but yt-dlp also
+/// appends a generic "use --cookies…" hint to unrelated failures, so network
+/// errors were reported as "needs login". Matching only `sign in` is the
+/// opposite mistake: most extractors never say it -- Vimeo, for one, says
+/// "The web client only works when logged-in".
+const List<String> _loginRequiredPhrases = <String>[
+  'sign in',
+  'sign-in',
+  'log in',
+  'login required',
+  'logged-in',
+  'logged in',
+  'requires authentication',
+  'account credentials',
+  'registered users',
+  'members-only',
+  'members only',
+  'private video',
+  'this video is private',
+  'login is required',
+  'requires login',
+  'need to login',
+  'login details are needed',
+  'an account is needed',
+  'only available for subscribers',
+  '--username and --password',
+  // yt-dlp appends this hint from _login_hint(), which is reached only from
+  // raise_login_required() and two login warnings. It is the one marker that
+  // covers cookie-only extractors, whose messages carry no login wording at
+  // all. Safe to match here because isCookieSourceFailureStderr runs first, so
+  // a broken cookie store never reaches this branch.
+  'for the authentication',
+  '需要登录',
+  '请先登录',
+];
+
+bool isLoginRequiredStderr(String stderr) {
+  final String detail = stderr.toLowerCase();
+  return _loginRequiredPhrases.any(detail.contains);
+}
+
+String _browserLabel(YtDlpBrowser? browser) => switch (browser) {
+  YtDlpBrowser.edge => ' Edge ',
+  YtDlpBrowser.chrome => ' Chrome ',
+  YtDlpBrowser.firefox => ' Firefox ',
+  null => '浏览器',
+};
 
 String _withYtDlpDiagnostic(String message, String diagnostic) =>
     diagnostic.isEmpty ? message : '$message\n详情：$diagnostic';
