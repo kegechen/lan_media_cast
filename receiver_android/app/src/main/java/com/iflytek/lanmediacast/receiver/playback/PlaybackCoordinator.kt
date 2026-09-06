@@ -24,6 +24,7 @@ import androidx.media3.datasource.cache.LeastRecentlyUsedCacheEvictor
 import androidx.media3.datasource.cache.SimpleCache
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy
 import androidx.media3.exoplayer.upstream.LoadErrorHandlingPolicy
 import androidx.media3.exoplayer.dash.DashMediaSource
@@ -103,7 +104,14 @@ class PlaybackCoordinator(
         CacheDataSink.Factory().setCache(cache),
         ::shouldWriteCache,
     )
-    private val player = ExoPlayer.Builder(context).build()
+    private val player = ExoPlayer.Builder(context)
+        .setLoadControl(
+            DefaultLoadControl.Builder()
+                .setBufferDurationsMs(15_000, 60_000, 2_500, 5_000)
+                .setTargetBufferBytes(32 * 1024 * 1024)
+                .build(),
+        )
+        .build()
     private val loadErrorPolicy = CastLoadErrorPolicy()
     private val remoteHttpClient = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
@@ -137,6 +145,8 @@ class PlaybackCoordinator(
 
     @Volatile
     private var unmutedVolume = 1f
+    @Volatile
+    private var fatalPlaybackError = false
     private var resumeAfterPhoto = false
     private val positionPublisher = object : Runnable {
         override fun run() {
@@ -164,16 +174,19 @@ class PlaybackCoordinator(
             }
 
             override fun onPlayerError(error: PlaybackException) {
+                val outOfMemory = isFatalPlaybackError(error)
+                if (outOfMemory) {
+                    fatalPlaybackError = true
+                    player.stop()
+                }
                 ReceiverLog.e(
                     TAG,
                     "Playback failed: code=${error.errorCodeName}, causes=${playbackErrorCauses(error)}",
                 )
                 ReceiverRuntime.update {
                     it.copy(
-                        banner = playbackFailureBanner(
-                            error.errorCodeName,
-                            playbackHttpResponseCode(error),
-                        ),
+                        banner = if (outOfMemory) "播放缓冲占用内存过高，已停止；请选择较低清晰度或重新投放" else
+                            playbackFailureBanner(error.errorCodeName, playbackHttpResponseCode(error)),
                         bannerIsError = true,
                     )
                 }
@@ -264,10 +277,13 @@ class PlaybackCoordinator(
 
     fun execute(type: String, payload: JsonObject): JsonObject {
         when (type) {
-            "player.play" -> mainHandler.post {
+            "player.play" -> {
+                if (fatalPlaybackError) return error("invalid_state", "上次播放因内存不足停止，请重新选择媒体")
+                mainHandler.post {
                 if (shouldPrepareForPlay(player.playbackState, player.mediaItemCount)) player.prepare()
                 ReceiverRuntime.update { it.copy(playbackStopped = false) }
-                player.play()
+                    player.play()
+                }
             }
             "player.pause" -> mainHandler.post { player.pause() }
             "player.stop" -> mainHandler.post {
@@ -290,6 +306,7 @@ class PlaybackCoordinator(
                 val index = items.indexOfFirst { it.id == itemId }
                 if (index < 0) return error("item_not_found", "Playlist item was not found")
                 val autoplay = payload["autoplay"]?.jsonPrimitive?.booleanOrNull ?: false
+                fatalPlaybackError = false
                 mainHandler.post {
                     ReceiverRuntime.update { it.copy(playbackStopped = false) }
                     player.seekToDefaultPosition(index)
@@ -362,6 +379,7 @@ class PlaybackCoordinator(
             return
         }
         mainHandler.post {
+            fatalPlaybackError = false
             if (sources.isEmpty()) {
                 player.clearMediaItems()
                 return@post
@@ -381,6 +399,7 @@ class PlaybackCoordinator(
 
     private fun reloadSourcesPreservingPlayback() {
         mainHandler.post {
+            fatalPlaybackError = false
             val activeItemId = player.currentMediaItem?.mediaId
             val positionMs = player.currentPosition.coerceAtLeast(0L)
             val shouldPlay = player.playWhenReady
@@ -735,7 +754,7 @@ private fun trackTypeName(type: Int): String = when (type) {
 
 internal fun clearTransientPlaybackBannerOnReady(state: ReceiverUiState): ReceiverUiState {
     val banner = state.banner ?: return state
-    return if (banner.startsWith("网络不稳定") || banner.startsWith("播放失败")) {
+    return if (banner.startsWith("网络不稳定") || banner.startsWith("播放失败") || banner.startsWith("播放缓冲占用内存过高")) {
         state.copy(banner = null, bannerIsError = false)
     } else {
         state
@@ -779,6 +798,18 @@ private fun playbackErrorCauses(error: Throwable): String {
 internal fun shouldPrepareForPlay(playbackState: Int, mediaItemCount: Int): Boolean =
     playbackState == Player.STATE_IDLE && mediaItemCount > 0
 
+private inline fun <reified T : Throwable> Throwable.findCause(): T? {
+    var current: Throwable? = this
+    while (current != null) {
+        if (current is T) return current
+        current = current.cause
+    }
+    return null
+}
+
+internal fun isFatalPlaybackError(error: Throwable): Boolean =
+    error.findCause<OutOfMemoryError>() != null
+
 private class EtagPreflightInterceptor(private val expectedEtag: String) : Interceptor {
     private val completed = AtomicBoolean(false)
     private val lock = Any()
@@ -816,6 +847,7 @@ private class EtagPreflightInterceptor(private val expectedEtag: String) : Inter
 private class CastLoadErrorPolicy : DefaultLoadErrorHandlingPolicy(3) {
     override fun getRetryDelayMsFor(loadErrorInfo: LoadErrorHandlingPolicy.LoadErrorInfo): Long {
         val error = loadErrorInfo.exception
+        if (error.findCause<OutOfMemoryError>() != null) return C.TIME_UNSET
         val preflightError = error.findCause<MediaPreflightException>()
         if (preflightError != null) {
             return castHttpRetryDelay(
@@ -847,12 +879,4 @@ private class CastLoadErrorPolicy : DefaultLoadErrorHandlingPolicy(3) {
             this is HttpDataSource.HttpDataSourceException
     }
 
-    private inline fun <reified T : Throwable> Throwable.findCause(): T? {
-        var current: Throwable? = this
-        while (current != null) {
-            if (current is T) return current
-            current = current.cause
-        }
-        return null
-    }
 }

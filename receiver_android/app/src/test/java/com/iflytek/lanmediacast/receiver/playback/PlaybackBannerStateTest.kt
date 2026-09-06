@@ -6,6 +6,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Test
+import java.io.IOException
 
 class PlaybackBannerStateTest {
     @Test
@@ -23,6 +24,17 @@ class PlaybackBannerStateTest {
         assertNull(recovered.banner)
         assertFalse(recovered.bannerIsError)
         assertNull(resumed.banner)
+        assertNull(clearTransientPlaybackBannerOnReady(ReceiverUiState(
+            banner = "播放缓冲占用内存过高，已停止；请选择较低清晰度或重新投放",
+            bannerIsError = true,
+        )).banner)
+    }
+
+    @Test
+    fun `out of memory is fatal regardless of wrapping`() {
+        assertEquals(true, isFatalPlaybackError(OutOfMemoryError()))
+        assertEquals(true, isFatalPlaybackError(IOException(OutOfMemoryError())))
+        assertEquals(false, isFatalPlaybackError(IOException("network")))
     }
 
     @Test
